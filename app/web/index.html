@@ -1,0 +1,80 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>模型试跑平台</title>
+<link rel="stylesheet" href="/static/style.css" />
+</head>
+<body>
+<header>
+  <h1>门店日结 · 模型试跑平台</h1>
+  <nav>
+    <button class="tab active" data-tab="sources">源数据</button>
+    <button class="tab" data-tab="models">模型定义</button>
+    <button class="tab" data-tab="runs">试跑批次</button>
+  </nav>
+</header>
+
+<main>
+  <!-- ===================== 源数据 ===================== -->
+  <section id="tab-sources" class="tab-panel active">
+    <p class="hint">预置 <code>sales</code> / <code>refunds</code> 两张源表。上传 CSV 将<strong>整表覆盖</strong>；
+      已启动的试跑使用独立快照，覆盖不影响进行中/历史批次。</p>
+    <div id="source-panels"></div>
+  </section>
+
+  <!-- ===================== 模型定义 ===================== -->
+  <section id="tab-models" class="tab-panel">
+    <div class="toolbar">
+      <span class="hint">最多 4 个模型，仅允许 SELECT，依赖必须无环。</span>
+      <button id="btn-new-model" class="primary">＋ 新建模型</button>
+    </div>
+    <div id="model-list"></div>
+
+    <dialog id="model-dialog">
+      <form id="model-form" method="dialog">
+        <h3 id="dlg-title">新建模型</h3>
+        <input type="hidden" id="m-id" />
+        <label>模型名称
+          <input id="m-name" required pattern="[A-Za-z_][A-Za-z0-9_]*"
+                 placeholder="如 daily_sales_clean" />
+        </label>
+        <label>上游模型（可多选，无依赖留空）
+          <select id="m-upstreams" multiple size="4"></select>
+        </label>
+        <label>模型 SQL（仅 SELECT / WITH ... SELECT，单语句）
+          <textarea id="m-sql" rows="10" spellcheck="false" required></textarea>
+        </label>
+        <div id="m-error" class="error-msg"></div>
+        <menu>
+        <button value="cancel" class="ghost">取消</button>
+        <button id="m-save" value="save" class="primary">保存</button>
+        </menu>
+      </form>
+    </dialog>
+  </section>
+
+  <!-- ===================== 试跑 ===================== -->
+  <section id="tab-runs" class="tab-panel">
+    <div class="toolbar">
+      <button id="btn-start-run" class="primary">▶ 启动试跑（冻结当前源数据）</button>
+      <span id="run-global-msg" class="hint"></span>
+    </div>
+    <div id="run-list"></div>
+
+    <dialog id="run-dialog" class="wide">
+      <article id="run-detail"></article>
+      <menu><button value="close" class="ghost">关闭</button></menu>
+    </dialog>
+
+    <dialog id="result-dialog" class="wide">
+      <article id="result-detail"></article>
+      <menu><button value="close" class="ghost">关闭</button></menu>
+    </dialog>
+  </section>
+</main>
+
+<script src="/static/app.js"></script>
+</body>
+</html>
