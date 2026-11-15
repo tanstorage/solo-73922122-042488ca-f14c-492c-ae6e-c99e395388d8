@@ -12,9 +12,9 @@ from typing import Iterator
 import psycopg2
 import psycopg2.extras  # noqa: F401  注册 dict cursor
 
-from .config import DATABASE_URL
+from .config import DATABASE_URL, POOL_MAXSIZE
 
-_pool: "queue.Queue" = queue.Queue(maxsize=16)
+_pool: "queue.Queue" = queue.Queue(maxsize=POOL_MAXSIZE)
 _pool_lock = threading.Lock()
 _pool_size = 0
 
@@ -32,7 +32,7 @@ def get_conn():
         return _pool.get_nowait()
     except queue.Empty:
         with _pool_lock:
-            if _pool_size < 16:
+            if _pool_size < POOL_MAXSIZE:
                 _pool_size += 1
                 return _new_conn()
     # 池满则等待归还

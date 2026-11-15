@@ -59,6 +59,9 @@ CREATE TABLE IF NOT EXISTS public.runs (
                     CHECK (status IN ('initializing','running','succeeded','failed')),
     source_version  INTEGER NOT NULL DEFAULT 0,
     snapshot_schema TEXT,
+    -- 快照回收标记：非空表示该批次专属 schema 内的源表/结果表已删除。
+    -- 与 DROP 在同一事务内写入，保证标记与快照物理状态永远一致。
+    reclaimed_at    TIMESTAMPTZ,
     error_summary   TEXT,
     created_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
     started_at      TIMESTAMPTZ,

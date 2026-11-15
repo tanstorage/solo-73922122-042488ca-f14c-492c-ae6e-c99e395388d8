@@ -19,15 +19,43 @@ services:
 
   api:
     build: .
+    # 两个 Web 实例同时运行：回收接口依赖数据库行锁串行化，
+    # 即使请求落到不同实例，同一批次也只会被真正清理一次
+    deploy:
+      replicas: 2
     depends_on:
       db:
         condition: service_healthy
     environment:
       DATABASE_URL: postgresql://postgres:postgres@db:5432/tryout
       MAX_WORKERS: "4"
+      POOL_MAXSIZE: "32"
       STATEMENT_TIMEOUT_MS: "30000"
+      # 在途查询占用快照时，回收最长等待锁的时间（毫秒），超时整体回滚
+      RECLAIM_LOCK_TIMEOUT_MS: "10000"
+    expose:
+      - "8000"
+    healthcheck:
+      test:
+        - "CMD"
+        - "python"
+        - "-c"
+        - "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://localhost:8000/api/health').status==200 else 1)"
+      interval: 5s
+      timeout: 3s
+      retries: 20
+    restart: unless-stopped
+
+  web:
+    image: nginx:1.27-alpine
+    depends_on:
+      api:
+        condition: service_healthy
     ports:
-      - "8000:8000"
+      # 唯一浏览器入口，轮询转发到两个 api 副本
+      - "8000:80"
+    volumes:
+      - ./nginx.conf:/etc/nginx/nginx.conf:ro
     restart: unless-stopped
 
 volumes:

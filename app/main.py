@@ -13,6 +13,12 @@ from pydantic import BaseModel, Field
 
 from . import runs_service, scheduler, services
 from .config import SOURCE_TABLES
+from .reclaim_service import (
+    ReclaimBusyError,
+    ReclaimError,
+    ReclaimedError,
+    reclaim_run,
+)
 
 logging.basicConfig(
     level=logging.INFO,
@@ -171,10 +177,27 @@ def api_retry(run_id: int):
     return {"run_id": run_id, "reset_nodes": reset}
 
 
+@app.post("/api/runs/{run_id}/reclaim", status_code=200)
+def api_reclaim(run_id: int):
+    """回收历史成功批次的专属快照（保留批次/节点/事件供复盘）。"""
+    try:
+        return reclaim_run(run_id)
+    except ReclaimBusyError as exc:
+        # 在途查询未结束导致锁等待超时：什么都没删，客户端可安全重试
+        raise HTTPException(503, str(exc)) from exc
+    except ReclaimedError as exc:  # 理论上不会走这里，保持防御
+        raise HTTPException(410, str(exc)) from exc
+    except ReclaimError as exc:
+        status = 404 if "不存在" in str(exc) else 409
+        raise HTTPException(status, str(exc)) from exc
+
+
 @app.get("/api/runs/{run_id}/nodes/{node_id}/result")
 def api_node_result(run_id: int, node_id: int):
     try:
         return runs_service.get_node_result(run_id, node_id)
+    except ReclaimedError as exc:
+        raise HTTPException(410, str(exc)) from exc
     except runs_service.UploadError as exc:
         raise HTTPException(404, str(exc)) from exc
 

@@ -4,8 +4,11 @@ from __future__ import annotations
 import csv
 import io
 
+import psycopg2
+
 from . import db as dbmod
 from .config import SOURCE_TABLES
+from .reclaim_service import ReclaimedError
 
 # 源表允许通过 CSV 写入的列（updated_at 由数据库维护）
 TABLE_COLUMNS: dict[str, list[str]] = {
@@ -133,6 +136,7 @@ def list_runs(limit: int = 20) -> list[dict]:
             conn,
             """
             SELECT r.id, r.status, r.source_version, r.snapshot_schema,
+                   r.reclaimed_at,
                    r.error_summary, r.created_at, r.started_at, r.finished_at,
                    count(n.*) AS node_total,
                    count(n.*) FILTER (WHERE n.status='succeeded') AS node_ok,
@@ -149,7 +153,7 @@ def list_runs(limit: int = 20) -> list[dict]:
     out = []
     for r in rows:
         d = dict(r)
-        for k in ("created_at", "started_at", "finished_at"):
+        for k in ("created_at", "started_at", "finished_at", "reclaimed_at"):
             if d.get(k):
                 d[k] = d[k].isoformat()
         out.append(d)
@@ -175,7 +179,7 @@ def get_run_detail(run_id: int) -> dict:
             (run_id,),
         )
     run_d = dict(run)
-    for k in ("created_at", "started_at", "finished_at"):
+    for k in ("created_at", "started_at", "finished_at", "reclaimed_at"):
         if run_d.get(k):
             run_d[k] = run_d[k].isoformat()
     node_out = []
@@ -197,6 +201,19 @@ def get_run_detail(run_id: int) -> dict:
 def get_node_result(run_id: int, node_id: int, limit: int = 200) -> dict:
     limit = max(1, min(limit, 1000))
     with dbmod.conn_ctx() as conn:
+        run = dbmod.fetch_one(
+            conn,
+            "SELECT id, reclaimed_at FROM public.runs WHERE id=%s",
+            (run_id,),
+        )
+        if run is None:
+            raise UploadError(f"试跑 #{run_id} 不存在")
+        if run["reclaimed_at"] is not None:
+            # 快照已回收：新查询明确告知不可读取，而不是去查已删除的表
+            raise ReclaimedError(
+                f"试跑 #{run_id} 的结果快照已于 {run['reclaimed_at'].isoformat()} "
+                "回收，结果数据不可读取（批次记录与事件仍可查看）"
+            )
         node = dbmod.fetch_one(
             conn,
             "SELECT * FROM public.run_nodes WHERE run_id=%s AND id=%s",
@@ -214,12 +231,30 @@ def get_node_result(run_id: int, node_id: int, limit: int = 200) -> dict:
                 "message": "节点未成功执行，暂无结果",
             }
         table = node["result_table"]  # 来自受控标识符，非用户自由输入
-        with conn.cursor() as cur:
-            cur.execute(f"SELECT count(*) AS c FROM {table}")
-            total = cur.fetchone()[0]
-            cur.execute(f"SELECT * FROM {table} LIMIT %s", (limit,))
-            cols = [d[0] for d in cur.description]
-            raw_rows = cur.fetchall()
+        try:
+            with conn.cursor() as cur:
+                cur.execute(f"SELECT count(*) AS c FROM {table}")
+                total = cur.fetchone()[0]
+                cur.execute(f"SELECT * FROM {table} LIMIT %s", (limit,))
+                cols = [d[0] for d in cur.description]
+                raw_rows = cur.fetchall()
+        except psycopg2.errors.UndefinedTable:
+            # 交错边界：本查询开始时回收尚未提交（读到 reclaimed_at 为空），
+            # 但读表前回收事务先提交并 DROP 了表。此时按“已回收”语义
+            # 返回 410，而不是让请求 500。
+            conn.rollback()
+            with conn.cursor() as cur:
+                cur.execute(
+                    "SELECT reclaimed_at FROM public.runs WHERE id=%s",
+                    (run_id,),
+                )
+                reclaimed = cur.fetchone()[0]
+            if reclaimed is not None:
+                raise ReclaimedError(
+                    f"试跑 #{run_id} 的结果快照已于 {reclaimed.isoformat()} "
+                    "回收，结果数据不可读取（批次记录与事件仍可查看）"
+                )
+            raise
     rows = []
     for r in raw_rows:
         d = dict(zip(cols, r))

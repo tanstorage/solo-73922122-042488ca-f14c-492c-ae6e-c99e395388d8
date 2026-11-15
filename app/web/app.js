@@ -212,22 +212,31 @@ async function loadRuns() {
       wrap.innerHTML = `<p class="hint">还没有试跑批次。</p>`;
       return;
     }
-    wrap.innerHTML = runs.map((r) => `
-      <div class="card">
-        <h3>试跑 #${r.id} ${STATUS_BADGE(r.status)}</h3>
+    wrap.innerHTML = runs.map((r) => {
+      const latestId = runs.length ? runs[0].id : null; // 列表按 id 倒序，首个即最新批次
+      const canReclaim = r.status === "succeeded" && !r.reclaimed_at && r.id !== latestId;
+      return `
+      <div class="card${r.reclaimed_at ? " reclaimed" : ""}">
+        <h3>试跑 #${r.id} ${STATUS_BADGE(r.status)}
+          ${r.reclaimed_at ? `<span class="badge reclaimed" title="${esc(r.reclaimed_at)}">结果已回收</span>` : ""}
+        </h3>
         <div class="meta">
-          <span>快照: <code>${esc(r.snapshot_schema || "-")}</code></span>
+          <span>快照: <code>${esc(r.snapshot_schema || "-")}</code>${r.reclaimed_at ? "（已删除）" : ""}</span>
           <span>源数据版本: ${r.source_version}</span>
           <span>节点: 成功 ${r.node_ok} / 失败 ${r.node_failed} / 阻塞 ${r.node_blocked} / 运行 ${r.node_running} / 待跑 ${r.node_pending}（共 ${r.node_total}）</span>
           <span>创建: ${esc(r.created_at)}</span>
           <span>结束: ${esc(r.finished_at || "-")}</span>
+          ${r.reclaimed_at ? `<span>回收时间: ${esc(r.reclaimed_at)}</span>` : ""}
         </div>
         ${r.error_summary ? `<p class="error-msg">${esc(r.error_summary)}</p>` : ""}
         <div class="row-actions">
           <button onclick='openRunDetail(${r.id})'>查看详情/失败原因</button>
           ${r.status === "failed" ? `<button class="primary" onclick='retryRun(${r.id})'>重试失败节点（沿用本次快照）</button>` : ""}
+          ${canReclaim ? `<button class="danger" onclick='reclaimRun(${r.id})'>回收快照空间（仅删本批次专属 schema）</button>` : ""}
+          ${r.reclaimed_at ? `<span class="hint">结果已回收，批次记录与事件保留供复盘</span>` : ""}
         </div>
-      </div>`).join("");
+      </div>`;
+    }).join("");
 
     const active = runs.some((r) => ["initializing", "running"].includes(r.status));
     $("#btn-start-run").disabled = active;
@@ -265,17 +274,39 @@ window.retryRun = async function (id) {
   }
 };
 
+window.reclaimRun = async function (id) {
+  if (!confirm(
+    "确认回收试跑 #" + id + " 的快照空间？\n\n" +
+    "· 仅删除该批次专属 schema 内的源表与结果表；\n" +
+    "· 批次、节点、事件记录保留，页面会标注「结果已回收」；\n" +
+    "· 回收后该批次结果无法再查询，且不可撤销。"
+  )) return;
+  try {
+    const r = await api(`/api/runs/${id}/reclaim`, { method: "POST" });
+    toast(`已回收 ${r.dropped_count} 张表，快照 schema 已移除`);
+    loadRuns();
+    openRunDetail(id);
+  } catch (e) {
+    toast(e.message, true);
+  }
+};
+
 window.openRunDetail = async function (id) {
   try {
     const d = await api(`/api/runs/${id}`);
     const r = d.run;
     $("#run-detail").innerHTML = `
-      <h3>试跑 #${r.id} ${STATUS_BADGE(r.status)}</h3>
+      <h3>试跑 #${r.id} ${STATUS_BADGE(r.status)}
+        ${r.reclaimed_at ? `<span class="badge reclaimed">结果已回收</span>` : ""}
+      </h3>
       <div class="meta">
-        <span>快照 schema: <code>${esc(r.snapshot_schema)}</code></span>
+        <span>快照 schema: <code>${esc(r.snapshot_schema || "-")}</code>${r.reclaimed_at ? "（已删除）" : ""}</span>
         <span>源数据版本: ${r.source_version}</span>
+        ${r.reclaimed_at ? `<span>回收时间: ${esc(r.reclaimed_at)}</span>` : ""}
         ${r.error_summary ? `<span class="error-msg">${esc(r.error_summary)}</span>` : ""}
       </div>
+      ${r.reclaimed_at ? `<p class="reclaim-note">该批次的源表与结果表已于 ${esc(r.reclaimed_at)} 回收，
+        结果数据不可读取；批次、节点状态与事件流完整保留供复盘。</p>` : ""}
       <h4>节点（按依赖拓扑序）</h4>
       <div class="scroll">
       <table><thead><tr>
@@ -285,14 +316,18 @@ window.openRunDetail = async function (id) {
         <tr>
           <td>${i + 1}</td>
           <td>${esc(n.model_name)}</td>
-          <td>${STATUS_BADGE(n.status)}</td>
+          <td>${STATUS_BADGE(n.status)}${r.reclaimed_at && n.status === "succeeded" ? ` <span class="badge reclaimed">已回收</span>` : ""}</td>
           <td>${n.upstream_ids.length ? n.upstream_ids.map((u) => {
             const up = d.nodes.find((x) => x.model_id === u);
             return esc(up ? up.model_name : `#${u}`);
           }).join(", ") : "—"}</td>
           <td>
             ${n.error ? `<pre class="sql" style="white-space:pre-wrap">${esc(n.error)}</pre>` : ""}
-            ${n.status === "succeeded" ? `<button onclick='openResult(${r.id}, ${n.id})'>查看结果（${esc(n.result_table)}）</button>` : ""}
+            ${n.status === "succeeded"
+              ? (r.reclaimed_at
+                ? `<span class="hint">结果表 ${esc(n.result_table || "")} 已随快照回收，不可读取</span>`
+                : `<button onclick='openResult(${r.id}, ${n.id})'>查看结果（${esc(n.result_table)}）</button>`)
+              : ""}
           </td>
         </tr>`).join("")}
       </tbody></table></div>
